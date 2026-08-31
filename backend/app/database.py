@@ -42,7 +42,24 @@ async_engine = create_async_engine(settings.db_uri)
 
 
 def _prepare_sessionmaker(engine: Engine) -> sessionmaker:
-    return sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    # FIX 2026-08-31: expire_on_commit defaulted to True here (the async
+    # sessionmaker below already explicitly sets it False -- this one was
+    # just never brought in line). With it True, every ORM object's
+    # attributes get expired the instant db.commit() succeeds, so any
+    # after_commit event listener that reads an attribute (e.g.
+    # event_record_service.py's webhook dispatcher reading
+    # record.category) forces a lazy-reload query -- which SQLAlchemy
+    # refuses to run from inside an after_commit hook, since the
+    # transaction has already closed. That raised
+    # sqlalchemy.exc.InvalidRequestError: "This session is in 'committed'
+    # state...", which masqueraded as a totally unrelated-looking crash
+    # anywhere in this codebase that (a) commits a session with a pending
+    # webhook dispatch and (b) later calls db.rollback() in its except
+    # block, since the rollback failure replaced the real error. Found
+    # via the Whoop workouts/strain-score sync path, see decision-log.md
+    # 2026-08-31, but this was a live landmine for any synchronous route
+    # using this sessionmaker with a post-commit webhook.
+    return sessionmaker(autocommit=False, autoflush=False, bind=engine, expire_on_commit=False)
 
 
 def _prepare_async_sessionmaker(engine: AsyncEngine) -> async_sessionmaker:
