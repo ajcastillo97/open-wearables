@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncGenerator, Iterator
 from datetime import date, datetime
 from typing import Annotated
@@ -26,6 +27,8 @@ from app.schemas.auth import ConnectionStatus, LiveSyncMode, TokenType
 from app.schemas.enums import AggregationMethod, HealthScoreCategory, ProviderName
 from app.schemas.model_crud.user_management import InvitationStatus
 from app.utils.mappings_meta import AutoRelMeta
+
+logger = logging.getLogger(__name__)
 
 engine = create_engine(
     settings.db_uri,
@@ -86,7 +89,19 @@ def _get_db_dependency() -> Iterator[Session]:
     try:
         yield db
     except Exception as exc:
-        db.rollback()
+        # FIX 2026-08-31: db.rollback() itself can raise (e.g.
+        # sqlalchemy.exc.InvalidRequestError: "This session is in
+        # 'committed' state; no further SQL can be emitted...") when the
+        # original exception happened right after a successful commit
+        # with no further statement in between -- the session has no
+        # active transaction left to roll back. Letting that rollback
+        # failure propagate replaces the real `exc` with this unrelated
+        # cleanup error, which is silent/misleading: whatever actually
+        # broke the request never gets logged or returned to the caller.
+        try:
+            db.rollback()
+        except Exception:
+            logger.exception("db.rollback() failed while handling an earlier exception; ignoring so the original error surfaces")
         raise exc
     finally:
         db.close()
