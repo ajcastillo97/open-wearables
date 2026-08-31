@@ -421,8 +421,29 @@ class WhoopWorkouts(BaseWorkoutsTemplate):
             try:
                 health_score_service.bulk_create(db, strain_scores)
                 db.commit()
-            except Exception:
-                db.rollback()
+            except Exception as e:
+                # FIX 2026-08-31: surface the real failure -- this used to
+                # be a bare `except Exception: db.rollback(); raise`, and
+                # db.rollback() itself can throw (sqlalchemy.exc.
+                # InvalidRequestError: "This session is in 'committed'
+                # state...") when the earlier per-workout loop above
+                # already committed successfully and left nothing active
+                # to roll back. That rollback failure was replacing this
+                # exception before it ever got logged, hiding whatever
+                # actually broke strain-score saving (e.g. a duplicate-key
+                # conflict from re-syncing an overlapping date range).
+                log_structured(
+                    self.logger,
+                    "error",
+                    f"Failed to save strain scores: {e}",
+                    provider="whoop",
+                    task="load_data",
+                    user_id=str(user_id),
+                )
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
                 raise
 
         return count
