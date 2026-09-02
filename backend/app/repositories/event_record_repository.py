@@ -285,7 +285,16 @@ class EventRecordRepository(
             filters.append(EventRecord.start_datetime >= query_params.start_datetime)
 
         if query_params.end_datetime:
-            filters.append(EventRecord.end_datetime < query_params.end_datetime)
+            # FIX 2026-09-02: same exclusive-upper-bound bug as the
+            # sleep/recovery summaries fixes above -- query_params.end_datetime
+            # is midnight UTC of "today" (parse_query_datetime on a
+            # date-only string), so "< end_datetime" excluded every event
+            # (workout or raw sleep session, this filter backs both
+            # /events/workouts and /events/sleep) that ended any time
+            # later that same day. Found in the same sweep as the
+            # sleep/recovery summaries bug, same day, same root cause.
+            # See decision-log.md 2026-09-02.
+            filters.append(EventRecord.end_datetime < query_params.end_datetime + timedelta(days=1))
 
         if query_params.min_duration is not None:
             filters.append(EventRecord.duration_seconds >= query_params.min_duration)
@@ -547,7 +556,18 @@ class EventRecordRepository(
                 EventRecord.category == "sleep",
                 EventRecord.end_datetime >= start_date - timedelta(days=1),
                 local_sleep_date >= cast(start_date, Date),
-                local_sleep_date < cast(end_date, Date),
+                # FIX 2026-09-02: was "< cast(end_date, Date)" -- a strict
+                # less-than against the upper bound. Callers always pass
+                # end_date="today" (see fetchSleep's getDateRange in
+                # garmin-intelligence), so this silently excluded every
+                # user's *own current day's* sleep record, every single
+                # day, regardless of any Whoop/provider data lag. Found
+                # investigating Bob's dashboard being stuck one day behind
+                # even after he confirmed today's sleep was already in his
+                # Whoop app -- confirmed via direct DB query that the
+                # correctly-dated 9/2 row existed and was excluded only by
+                # this comparison. See decision-log.md 2026-09-02.
+                local_sleep_date <= cast(end_date, Date),
             )
             .group_by(
                 local_sleep_date,

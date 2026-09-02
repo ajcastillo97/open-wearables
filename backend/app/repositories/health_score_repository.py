@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, cast
 from uuid import UUID
 
@@ -113,11 +113,22 @@ class HealthScoreRepository(CrudRepository[HealthScore, HealthScoreCreate, Healt
         Fetches limit+1 rows so callers can detect has_more without a separate COUNT query.
         Ordering matches get_sleep_summaries: ASC by default, DESC when paginating backward.
         """
+        # FIX 2026-09-02: was "recorded_at < end_date" -- end_date is
+        # midnight UTC of the query's end date (see parse_query_datetime),
+        # so a strict "<" excluded every recovery score recorded any time
+        # during that entire day, not just the exact midnight instant.
+        # Callers always pass end_date="today", so this permanently hid
+        # every user's own current day's recovery score until the
+        # calendar rolled over -- the same bug shape (and same root
+        # cause: an exclusive upper bound meant to be inclusive-of-today)
+        # as the sleep-summaries fix in event_record_repository.py, found
+        # the same day investigating Bob's dashboard. See decision-log.md
+        # 2026-09-02.
         query = db_session.query(HealthScore).filter(
             HealthScore.user_id == user_id,
             HealthScore.category == HealthScoreCategory.RECOVERY,
             HealthScore.recorded_at >= start_date,
-            HealthScore.recorded_at < end_date,
+            HealthScore.recorded_at < end_date + timedelta(days=1),
         )
 
         if cursor:
