@@ -122,7 +122,21 @@ class EventRecordService(
             if data_source is not None:
                 _record, _data_source, _detail = record, data_source, detail
 
-                @sa_event.listens_for(db_session, "after_commit", once=True)
+                # FIX 2026-09-02: was "after_commit" -- SQLAlchemy explicitly
+                # documents that after_commit is not the place to run SQL
+                # (the transaction has already closed by then), which is
+                # exactly what _emit_event_record_webhook does when it reads
+                # an attribute that needs a fresh load (e.g. after an
+                # earlier per-record commit elsewhere expired or never
+                # loaded it). That produced sqlalchemy.exc.InvalidRequestError:
+                # "This session is in 'committed' state..." on every Whoop
+                # workout sync that had a pending strain-score commit.
+                # before_commit fires while the transaction is still fully
+                # live and queryable, and still only once per the next
+                # commit (once=True), so this preserves the existing "fire
+                # after the batch's real commit" behavior. See
+                # decision-log.md 2026-09-02.
+                @sa_event.listens_for(db_session, "before_commit", once=True)
                 def _dispatch_webhook(session: DbSession) -> None:  # noqa: ARG001
                     self._emit_event_record_webhook(_record, _data_source, _detail)
 
@@ -590,7 +604,9 @@ class EventRecordService(
         if not dispatches:
             return
 
-        @sa_event.listens_for(db_session, "after_commit", once=True)
+        # FIX 2026-09-02: same after_commit -> before_commit fix as
+        # create_detail() above, same reason -- see that comment.
+        @sa_event.listens_for(db_session, "before_commit", once=True)
         def _dispatch_bulk_webhooks(session: DbSession) -> None:  # noqa: ARG001
             for record, data_source, detail in dispatches:
                 self._emit_event_record_webhook(record, data_source, detail)
