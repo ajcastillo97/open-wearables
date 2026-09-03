@@ -232,6 +232,8 @@ class OuraWebhookHandler(BaseWebhookHandler):
             object_id=notification.object_id,
         )
 
+        self.connection_repo.update_last_synced_at(db, connection)
+
         count = self._dispatch_data_type(db, notification, user_id)
 
         if count is None:
@@ -252,7 +254,9 @@ class OuraWebhookHandler(BaseWebhookHandler):
             "Oura webhook notification processed",
             provider="oura",
             action="oura_webhook_complete",
+            trace_id=trace_id,
             user_id=str(user_id),
+            oura_user_id=notification.user_id,
             data_type=notification.data_type,
             event_type=notification.event_type,
             records_saved=count,
